@@ -22,14 +22,14 @@ function ChartLineFactory(orientation: 'horizontal' | 'vertical') {
       length,
       ...props
     }: ChartLineProps) => {
-      const { positionX, dotScale, currentPath, height } = useChartData();
+      const { positionX, isActive, currentPath, height } = useChartData();
 
       const currentPositionVerticalLineStyle = useAnimatedStyle(
         () => ({
-          opacity: dotScale.value,
+          opacity: isActive.value ? 1 : 0,
           transform: [{ translateX: positionX.value }],
         }),
-        []
+        [isActive.value, positionX.value]
       );
 
       const openingPositionHorizontalLineStyle = useAnimatedStyle(() => {
@@ -45,6 +45,7 @@ function ChartLineFactory(orientation: 'horizontal' | 'vertical') {
           ],
         };
       }, [currentPath]);
+
       return (
         <Animated.View
           pointerEvents="none"
