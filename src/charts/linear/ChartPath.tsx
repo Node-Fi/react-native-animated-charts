@@ -23,7 +23,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { getYForX } from 'react-native-redash';
 import Svg, { Path, PathProps } from 'react-native-svg';
-import { PathData } from '../../helpers/ChartContext';
+import { ChartData, PathData } from '../../helpers/ChartContext';
 import {
   requireOnWorklet,
   useWorkletValue,
@@ -41,18 +41,22 @@ function least(length: number, compare: (value: number) => number) {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     let pivot = Math.round(bound1 + (bound2 - bound1) / 2);
-    if (pivot === bound1) {
+    if (bound1 === bound2) {
       return bound1;
     }
-    if (pivot === bound2) {
-      return bound2;
-    }
+    const areTwoLeft = bound2 === bound1 + 1;
     if (compare(pivot - 1) - compare(pivot) > 0) {
       // decreasing, dip on the right side decreasing, dip on the right side
+      if (areTwoLeft) {
+        return pivot;
+      }
       bound1 = pivot;
     } else {
       // non-increasing or dip, dip on the left side or in pivot non-increasing or dip, dip on the left side or in pivot
       bound2 = pivot;
+      if (areTwoLeft) {
+        return pivot - 1;
+      }
     }
   }
 }
@@ -102,35 +106,32 @@ function positionXWithMargin(x: number, margin: number, width: number) {
   }
 }
 
-export const ChartPath = React.memo(
+const ChartPathInner = React.memo(
   ({
-    hapticsEnabled,
     hitSlop = 0,
-    width,
-    height,
     stroke = 'black',
     selectedStrokeWidth = 1,
     strokeWidth = 1,
     gestureEnabled = true,
     selectedOpacity = 0.7,
+    hapticsEnabled,
+    width,
+    height,
     timingFeedbackConfig,
     timingAnimationConfig,
-    longPressGestureHandlerProps = {},
+    longPressGestureHandlerProps,
+    positionX,
+    positionY,
+    originalX,
+    originalY,
+    state,
+    isActive,
+    progress,
+    pathOpacity,
+    currentPath,
+    previousPath,
     ...props
-  }: ChartPathProps) => {
-    const {
-      positionX,
-      positionY,
-      originalX,
-      originalY,
-      state,
-      isActive,
-      progress,
-      pathOpacity,
-      currentPath,
-      previousPath,
-    } = useChartData();
-
+  }: ChartPathProps & Omit<ChartData, 'data' | 'dotScale'>) => {
     const interpolatorWorklet = useWorkletValue();
 
     const translationX = useSharedValue<number | null>(null);
@@ -157,6 +158,7 @@ export const ChartPath = React.memo(
     const resetGestureState = useWorkletCallback(() => {
       originalX.value = '';
       originalY.value = '';
+      positionY.value = -1;
       isActive.value = false;
       pathOpacity.value = withTiming(
         1,
@@ -220,7 +222,7 @@ export const ChartPath = React.memo(
           return;
         }
 
-        const yForX = getYForX(currentPath.parsed, Math.floor(values.x));
+        const yForX = getYForX(currentPath.parsed, values.x);
 
         if (yForX !== null) {
           positionY.value = yForX;
@@ -228,17 +230,48 @@ export const ChartPath = React.memo(
 
         positionX.value = values.x;
 
-        // refer to this article for more defails about this code
+        // refer to this article for more details about this code
         // https://observablehq.com/@d3/multi-line-chart
         const index = least(currentPath.points.length, i => {
           if (typeof i === 'undefined' || values.x === null) {
             return 0;
           }
 
-          return Math.abs(currentPath.points[i].x - Math.floor(values.x));
+          return Math.abs(currentPath.points[i].x - values.x);
         });
 
-        setOriginData(currentPath, index);
+        const pointX = currentPath.points[index]?.originalX;
+
+        let adjustedPointX = pointX;
+        if (currentPath.points[index].x > values.x) {
+          const prevPointOriginalX = currentPath.points[index - 1]?.originalX;
+          if (prevPointOriginalX) {
+            const distance =
+              (currentPath.points[index].x - values.x) /
+              (currentPath.points[index].x - currentPath.points[index - 1].x);
+            adjustedPointX =
+              prevPointOriginalX * distance + pointX * (1 - distance);
+          }
+        } else {
+          const nextPointOriginalX = currentPath.points[index + 1]?.originalX;
+          if (nextPointOriginalX) {
+            const distance =
+              (values.x - currentPath.points[index].x) /
+              (currentPath.points[index + 1].x - currentPath.points[index].x);
+            adjustedPointX =
+              nextPointOriginalX * distance + pointX * (1 - distance);
+          }
+        }
+
+        const dataIndex = least(currentPath.data.length, i => {
+          if (typeof i === 'undefined' || values.x === null) {
+            return 0;
+          }
+
+          return Math.abs(currentPath.data[i].x - adjustedPointX);
+        });
+
+        setOriginData(currentPath, dataIndex);
       },
       [currentPath]
     );
@@ -328,40 +361,109 @@ export const ChartPath = React.memo(
         [width, height, hapticsEnabled, hitSlop, timingFeedbackConfig]
       );
 
-    const pathAnimatedStyles = useAnimatedStyle(() => ({
-      opacity: pathOpacity.value * (1 - selectedOpacity) + selectedOpacity,
-    }));
+    const pathAnimatedStyles = useAnimatedStyle(() => {
+      return {
+        opacity: pathOpacity.value * (1 - selectedOpacity) + selectedOpacity,
+      };
+    });
 
     return (
-      <View style={{ height, width }}>
-        <LongPressGestureHandler
-          enabled={gestureEnabled}
-          maxDist={100000}
-          minDurationMs={0}
-          onGestureEvent={onGestureEvent}
-          shouldCancelWhenOutside={false}
-          {...longPressGestureHandlerProps}
-        >
-          <Animated.View>
-            <Svg
-              style={{
-                height: height + FIX_CLIPPED_PATH_MAGIC_NUMBER,
-                width,
-              }}
-              viewBox={`0 0 ${width} ${height}`}
-            >
-              <AnimatedPath
-                // @ts-expect-error
-                animatedProps={animatedProps}
-                stroke={stroke}
-                strokeWidth={strokeWidth}
-                style={pathAnimatedStyles}
-                {...props}
-              />
-            </Svg>
-          </Animated.View>
-        </LongPressGestureHandler>
-      </View>
+      <LongPressGestureHandler
+        enabled={gestureEnabled}
+        maxDist={100000}
+        minDurationMs={0}
+        onGestureEvent={onGestureEvent}
+        shouldCancelWhenOutside={false}
+        {...longPressGestureHandlerProps}
+      >
+        <Animated.View>
+          <Svg
+            style={{
+              height: height + FIX_CLIPPED_PATH_MAGIC_NUMBER,
+              width,
+            }}
+            viewBox={`0 0 ${width} ${height}`}
+          >
+            <AnimatedPath
+              // @ts-expect-error
+              animatedProps={animatedProps}
+              stroke={stroke}
+              strokeWidth={strokeWidth}
+              style={pathAnimatedStyles}
+              {...props}
+            />
+          </Svg>
+        </Animated.View>
+      </LongPressGestureHandler>
     );
   }
 );
+
+export const ChartPath = React.memo(
+  ({
+    hapticsEnabled,
+    width,
+    height,
+    hitSlop,
+    stroke,
+    selectedStrokeWidth,
+    strokeWidth,
+    gestureEnabled,
+    selectedOpacity,
+    timingFeedbackConfig,
+    timingAnimationConfig,
+    longPressGestureHandlerProps = {},
+    ...props
+  }: ChartPathProps) => {
+    const {
+      positionX,
+      positionY,
+      originalX,
+      originalY,
+      state,
+      isActive,
+      progress,
+      pathOpacity,
+      currentPath,
+      previousPath,
+    } = useChartData();
+
+    let renderPath = null;
+
+    if (currentPath?.path) {
+      renderPath = (
+        <ChartPathInner
+          {...{
+            ...props,
+            currentPath,
+            gestureEnabled,
+            hapticsEnabled,
+            height,
+            hitSlop,
+            isActive,
+            longPressGestureHandlerProps,
+            originalX,
+            originalY,
+            pathOpacity,
+            positionX,
+            positionY,
+            previousPath,
+            progress,
+            selectedOpacity,
+            selectedStrokeWidth,
+            state,
+            stroke,
+            strokeWidth,
+            timingAnimationConfig,
+            timingFeedbackConfig,
+            width,
+          }}
+        />
+      );
+    }
+
+    return <View style={{ height, width }}>{renderPath}</View>;
+  }
+);
+
+ChartPath.displayName = 'ChartPath';
