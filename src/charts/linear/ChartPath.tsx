@@ -340,23 +340,6 @@ const ChartPathInner = React.memo(
             state.value = event.state;
             resetGestureState();
           },
-          onStart: event => {
-            // WARNING: the following code does not run on using iOS, but it does on Android.
-            // I use the same code from onActive
-            // platform is for safety
-            if (Platform.OS === 'android') {
-              state.value = event.state;
-              isActive.value = true;
-              pathOpacity.value = withTiming(
-                0,
-                timingFeedbackConfig || timingFeedbackDefaultConfig
-              );
-
-              if (hapticsEnabled) {
-                impactHeavy();
-              }
-            }
-          },
         },
         [width, height, hapticsEnabled, hitSlop, timingFeedbackConfig]
       );
